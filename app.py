@@ -68,7 +68,14 @@ st_autorefresh(interval=2000, key="netpulse_heartbeat")
 st.title("🌐 NetPulse: Real-Time Network Threat Analyzer")
 st.caption("Low-Level Ingestion Engine + Gemini API Threat Summarization")
 
-api_key = st.sidebar.text_input("Google Gemini API Key", type="password")
+api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+
+with st.sidebar:
+    user_key = st.text_input("Gemini API Key (Optional)", value=api_key or "", type="password")
+    if user_key:
+        api_key = user_key
+    elif not api_key:
+        st.warning("⚠️ No Gemini API key detected. Add it in Streamlit Secrets.")
 
 if st.sidebar.button("⚠️ Trigger DDoS Traffic Spike"):
     try:
@@ -123,7 +130,7 @@ if not df.empty:
 
         if st.button("Generate Gemini Threat Report"):
             if not api_key:
-                st.warning("Please enter your Gemini API Key in the sidebar.")
+                st.warning("Please add a Gemini API key in Streamlit Secrets or enter one in the sidebar.")
             else:
                 try:
                     client = genai.Client(api_key=api_key)
