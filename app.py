@@ -1,3 +1,6 @@
+import os
+import subprocess
+import threading
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -6,6 +9,27 @@ from streamlit_autorefresh import st_autorefresh
 from google import genai
 
 from init_db import init_db
+
+
+def start_background_engine():
+    if not os.path.exists("run_engine.py"):
+        return
+
+    try:
+        subprocess.Popen(
+            ["python", "run_engine.py"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
+
+if "engine_started" not in st.session_state:
+    st.session_state["engine_started"] = True
+    thread = threading.Thread(target=start_background_engine, daemon=True)
+    thread.start()
 
 
 def seed_sample_telemetry():
@@ -45,6 +69,19 @@ st.title("🌐 NetPulse: Real-Time Network Threat Analyzer")
 st.caption("Low-Level Ingestion Engine + Gemini API Threat Summarization")
 
 api_key = st.sidebar.text_input("Google Gemini API Key", type="password")
+
+if st.sidebar.button("⚠️ Trigger DDoS Traffic Spike"):
+    try:
+        subprocess.Popen(
+            ["python", "traffic_gen.py"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        st.sidebar.warning("DDoS Spike Injected! Graph updated.")
+        st.rerun()
+    except Exception as e:
+        st.sidebar.error(f"Failed to trigger spike: {e}")
 
 if st.sidebar.button("⚡ Generate Sample Telemetry / DDoS Spike"):
     seed_sample_telemetry()
