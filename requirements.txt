@@ -1,4 +1,5 @@
 streamlit
+streamlit-autorefresh
 plotly
-google-genai
 pandas
+google-genai
