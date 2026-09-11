@@ -7,6 +7,36 @@ from google import genai
 
 from init_db import init_db
 
+
+def seed_sample_telemetry():
+    conn = sqlite3.connect("netpulse.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS traffic_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        bytes_captured INTEGER,
+        packet_count INTEGER
+    )
+    """)
+
+    sample_rows = [
+        (45000, 150),
+        (62000, 180),
+        (81000, 210),
+        (91000, 260),
+        (3500000, 2800),
+        (4200000, 3100),
+    ]
+    cursor.executemany(
+        "INSERT INTO traffic_logs (bytes_captured, packet_count) VALUES (?, ?)",
+        sample_rows,
+    )
+    conn.commit()
+    conn.close()
+
+
 st.set_page_config(page_title="NetPulse | AI Network Security", layout="wide")
 init_db()
 st_autorefresh(interval=2000, key="netpulse_heartbeat")
@@ -15,6 +45,12 @@ st.title("🌐 NetPulse: Real-Time Network Threat Analyzer")
 st.caption("Low-Level Ingestion Engine + Gemini API Threat Summarization")
 
 api_key = st.sidebar.text_input("Google Gemini API Key", type="password")
+
+if st.sidebar.button("⚡ Generate Sample Telemetry / DDoS Spike"):
+    seed_sample_telemetry()
+    st.sidebar.success("Sample telemetry injected! Refreshing...")
+    st.rerun()
+
 
 def fetch_latest_logs():
     conn = sqlite3.connect("netpulse.db", timeout=10)
@@ -78,4 +114,4 @@ if not df.empty:
     else:
         st.success("🟢 Network metrics nominal. No active threats detected.")
 else:
-    st.info("No network telemetry found. Run run_engine.py to start logging.")
+    st.info("No network telemetry found. Generate sample telemetry from the sidebar or run run_engine.py to start logging.")
