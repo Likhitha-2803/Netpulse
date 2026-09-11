@@ -5,7 +5,10 @@ import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 from google import genai
 
+from init_db import init_db
+
 st.set_page_config(page_title="NetPulse | AI Network Security", layout="wide")
+init_db()
 st_autorefresh(interval=2000, key="netpulse_heartbeat")
 
 st.title("🌐 NetPulse: Real-Time Network Threat Analyzer")
