@@ -1,6 +1,7 @@
 import os
 import subprocess
 import threading
+import time
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -62,8 +63,14 @@ def seed_sample_telemetry():
 
 
 st.set_page_config(page_title="NetPulse | AI Network Security", layout="wide")
+if "gemini_report" not in st.session_state:
+    st.session_state.gemini_report = None
+if "gemini_report_is_local" not in st.session_state:
+    st.session_state.gemini_report_is_local = False
+if "gemini_last_call" not in st.session_state:
+    st.session_state.gemini_last_call = 0.0
+
 init_db()
-st_autorefresh(interval=2000, key="netpulse_heartbeat")
 
 st.title("🌐 NetPulse: Real-Time Network Threat Analyzer")
 st.caption("Low-Level Ingestion Engine + Gemini API Threat Summarization")
@@ -104,7 +111,22 @@ def fetch_latest_logs():
         conn.close()
     return df
 
+def fetch_recent_anomalies():
+    conn = sqlite3.connect("netpulse.db", timeout=10)
+    try:
+        anomalies = pd.read_sql_query(
+            "SELECT * FROM traffic_logs "
+            "WHERE bytes_captured > 1000000 "
+            "AND timestamp >= datetime('now', '-15 seconds') "
+            "ORDER BY id DESC LIMIT 20",
+            conn,
+        )
+    finally:
+        conn.close()
+    return anomalies
+
 df = fetch_latest_logs()
+recent_anomalies = fetch_recent_anomalies()
 
 if not df.empty:
     df_sorted = df.sort_values(by="id")
@@ -123,7 +145,7 @@ if not df.empty:
 
     st.markdown("---")
     st.subheader("🤖 Gemini AI Threat Analysis")
-    has_anomaly = (df_sorted["bytes_captured"] > 1000000).any()
+    has_anomaly = not recent_anomalies.empty
 
     if has_anomaly:
         st.error("🚨 ANOMALOUS TRAFFIC SPIKE DETECTED!")
@@ -132,30 +154,81 @@ if not df.empty:
             if not api_key:
                 st.warning("Please add a Gemini API key in Streamlit Secrets or enter one in the sidebar.")
             else:
-                try:
-                    client = genai.Client(api_key=api_key)
-                    metrics_payload = df_sorted.tail(5).to_dict(orient="records")
-
-                    prompt = f"""
-                    You are a Security Operations Center (SOC) Specialist. Analyze these recent network telemetry logs:
-                    {metrics_payload}
-
-                    Provide a brief threat report (3 bullet points max):
-                    1. Attack Classification & Threat Level (e.g., High - Volumetric DDoS).
-                    2. Explanation of telemetry anomaly.
-                    3. Recommended SOC mitigation steps.
-                    """
-
-                    with st.spinner("Analyzing threat telemetry with Gemini..."):
-                        response = client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=prompt
+                elapsed = time.monotonic() - st.session_state.gemini_last_call
+                if elapsed < 10:
+                    st.warning(f"Please wait {10 - int(elapsed)} seconds before requesting another report.")
+                else:
+                    st.session_state.gemini_last_call = time.monotonic()
+                    try:
+                        client = genai.Client(api_key=api_key)
+                        metrics_payload = (
+                            recent_anomalies.sort_values(by="id")
+                            .tail(5)
+                            .to_dict(orient="records")
                         )
-                        st.success("Analysis Complete")
-                        st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"Gemini API Call Failed: {e}")
+
+                        prompt = f"""
+                        You are a Security Operations Center (SOC) Specialist. Analyze these recent network telemetry logs:
+                        {metrics_payload}
+
+                        Provide a brief threat report (3 bullet points max):
+                        1. Attack Classification & Threat Level (e.g., High - Volumetric DDoS).
+                        2. Explanation of telemetry anomaly.
+                        3. Recommended SOC mitigation steps.
+                        """
+
+                        with st.spinner("Analyzing threat telemetry with Gemini..."):
+                            for attempt in range(3):
+                                try:
+                                    response = client.models.generate_content(
+                                        model="gemini-3.8-flash",
+                                        contents=prompt
+                                    )
+                                    st.session_state.gemini_report = response.text
+                                    st.session_state.gemini_report_is_local = False
+                                    break
+                                except Exception as e:
+                                    if getattr(e, "code", None) != 503 or attempt == 2:
+                                        raise
+                                    time.sleep(2 ** (attempt + 1))
+                    except Exception as e:
+                        error_status = str(getattr(e, "status", ""))
+                        if getattr(e, "code", None) == 503:
+                            st.error("Gemini is still experiencing high demand after 3 attempts. Please try again shortly.")
+                        elif getattr(e, "code", None) == 429 or "RESOURCE_EXHAUSTED" in error_status or "RESOURCE_EXHAUSTED" in str(e):
+                            peak_row = recent_anomalies.loc[recent_anomalies["bytes_captured"].idxmax()]
+                            latest_row = df_sorted.iloc[-1]
+                            st.session_state.gemini_report = (
+                                "**Classification:** Possible volumetric traffic spike; investigate as a potential DDoS.\n\n"
+                                f"**Evidence:** Peak observed volume was {int(peak_row['bytes_captured']):,} bytes "
+                                f"with {int(peak_row['packet_count']):,} packets. Latest sample: "
+                                f"{int(latest_row['bytes_captured']):,} bytes and "
+                                f"{int(latest_row['packet_count']):,} packets.\n\n"
+                                "**Recommended actions:** Review source IPs and traffic distribution, apply rate limits "
+                                "or upstream DDoS protection if confirmed, and monitor subsequent samples. The current "
+                                "telemetry does not include source addresses, so it cannot confirm attack attribution."
+                            )
+                            st.session_state.gemini_report_is_local = True
+                            st.warning("Gemini quota is exhausted. Showing a local telemetry triage instead; check your Gemini usage and wait for quota reset before requesting AI analysis.")
+                        else:
+                            st.error(f"Gemini API Call Failed: {e}")
     else:
         st.success("🟢 Network metrics nominal. No active threats detected.")
 else:
     st.info("No network telemetry found. Generate sample telemetry from the sidebar or run run_engine.py to start logging.")
+
+if st.session_state.gemini_report:
+    if st.session_state.gemini_report_is_local:
+        st.info("Local triage (Gemini unavailable)")
+    else:
+        st.success("Analysis Complete")
+    st.markdown("### 🤖 SOC Threat Triage")
+    st.markdown(st.session_state.gemini_report)
+
+    if st.button("Clear Report"):
+        st.session_state.gemini_report = None
+        st.session_state.gemini_report_is_local = False
+        st.rerun()
+
+if not st.session_state.gemini_report:
+    st_autorefresh(interval=2000, key="netpulse_heartbeat")
